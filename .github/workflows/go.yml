@@ -10,7 +10,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
-      - run: go mod download
-      - run: go test ./...
-      - run: go vet ./...
+          cache: false
+      - name: Resolve and normalize module dependencies
+        run: go mod tidy
+      - name: Go tests
+        run: go test ./...
+      - name: Go vet
+        run: go vet ./...
+      - name: Preserve dependency receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-dependency-receipts
+          path: |
+            go.mod
+            go.sum
