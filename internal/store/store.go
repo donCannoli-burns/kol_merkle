@@ -46,6 +46,22 @@ CREATE TABLE IF NOT EXISTS snapshot_entries (
   title TEXT NOT NULL, content_sha256 TEXT NOT NULL REFERENCES objects(sha256),
   PRIMARY KEY(root,page_key)
 );
+
+CREATE TABLE IF NOT EXISTS snapshot_attestations (
+  root TEXT PRIMARY KEY REFERENCES snapshots(root),
+  page_root TEXT NOT NULL, history_root TEXT NOT NULL,
+  export_sha256 TEXT NOT NULL, export_byte_length INTEGER NOT NULL,
+  revision_count INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS snapshot_history_entries (
+  root TEXT NOT NULL REFERENCES snapshots(root),
+  page_key TEXT NOT NULL REFERENCES pages(page_key),
+  source_page_id INTEGER NOT NULL, namespace INTEGER NOT NULL,
+  title TEXT NOT NULL, source_revision_id INTEGER NOT NULL,
+  captured_timestamp TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL REFERENCES objects(sha256),
+  PRIMARY KEY(root,page_key,source_revision_id)
+);
 `
 
 type Store struct{ DB *sql.DB }
@@ -103,12 +119,15 @@ func ImportPage(ctx context.Context, tx *sql.Tx, origin string, p wiki.Page) (me
 		if err != nil {
 			return merkle.Entry{}, err
 		}
-		var previousHash string
-		if err := tx.QueryRowContext(ctx, `SELECT content_sha256 FROM revisions WHERE page_key=? AND source_revision_id=?`, pk, r.ID).Scan(&previousHash); err != nil {
+		var previousHash, previousTitle, previousTimestamp string
+		if err := tx.QueryRowContext(ctx, `SELECT content_sha256,title,captured_timestamp FROM revisions WHERE page_key=? AND source_revision_id=?`, pk, r.ID).Scan(&previousHash, &previousTitle, &previousTimestamp); err != nil {
 			return merkle.Entry{}, err
 		}
-		if previousHash != hash {
-			return merkle.Entry{}, fmt.Errorf("revision %d hash conflict on %s", r.ID, p.Title)
+		if previousHash != hash || previousTitle != p.Title || previousTimestamp != r.Timestamp {
+			return merkle.Entry{}, fmt.Errorf("revision %d metadata/content conflict on %s", r.ID, p.Title)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO temp.import_history(page_key,source_page_id,namespace,title,source_revision_id,captured_timestamp,content_sha256) VALUES(?,?,?,?,?,?,?)`, pk, p.ID, p.Namespace, p.Title, r.ID, r.Timestamp, hash); err != nil {
+			return merkle.Entry{}, fmt.Errorf("staging revision: %w", err)
 		}
 		affected, err := result.RowsAffected()
 		if err != nil {
@@ -127,9 +146,49 @@ func ImportPage(ctx context.Context, tx *sql.Tx, origin string, p wiki.Page) (me
 	return chosen, nil
 }
 
-// SaveSnapshot creates an immutable reference set. Identical input is idempotent.
-func SaveSnapshot(ctx context.Context, tx *sql.Tx, origin, root string, entries []merkle.Entry) error {
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO snapshots(root,origin,page_count,algorithm) VALUES(?,?,?,?)`, root, origin, len(entries), "binary-merkle-sha256-v1"); err != nil {
+// BeginImportHistory stages the exact membership of this export transaction.
+func BeginImportHistory(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `CREATE TEMP TABLE import_history (
+      page_key TEXT NOT NULL, source_page_id INTEGER NOT NULL, namespace INTEGER NOT NULL,
+      title TEXT NOT NULL, source_revision_id INTEGER NOT NULL,
+      captured_timestamp TEXT NOT NULL, content_sha256 TEXT NOT NULL,
+      PRIMARY KEY(page_key,source_revision_id)
+    )`)
+	return err
+}
+
+// StagedHistoryRoot computes a canonical digest without collecting all revisions in memory.
+func StagedHistoryRoot(ctx context.Context, tx *sql.Tx, origin string) (string, int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT source_page_id,namespace,title,source_revision_id,captured_timestamp,content_sha256 FROM temp.import_history ORDER BY source_page_id,source_revision_id`)
+	if err != nil {
+		return "", 0, err
+	}
+	defer rows.Close()
+	a := merkle.NewHistoryAccumulator()
+	for rows.Next() {
+		r := merkle.HistoricalRevision{Origin: origin}
+		if err := rows.Scan(&r.PageID, &r.Namespace, &r.Title, &r.RevisionID, &r.Timestamp, &r.ContentHash); err != nil {
+			return "", 0, err
+		}
+		if err := a.Add(r); err != nil {
+			return "", 0, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", 0, err
+	}
+	return a.Sum()
+}
+
+// SaveSnapshot persists an immutable v2 snapshot and its complete source history.
+func SaveSnapshot(ctx context.Context, tx *sql.Tx, origin, root string, entries []merkle.Entry, pageRoot, historyRoot, sourceHash string, sourceBytes, revisionCount int64) error {
+	if sourceBytes <= 0 || revisionCount <= 0 {
+		return fmt.Errorf("empty source manifest")
+	}
+	if expected, err := merkle.SnapshotV2Root(origin, pageRoot, historyRoot, sourceHash, sourceBytes); err != nil || expected != root {
+		return fmt.Errorf("invalid v2 snapshot commitment: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO snapshots(root,origin,page_count,algorithm) VALUES(?,?,?,?)`, root, origin, len(entries), merkle.SnapshotAlgorithm); err != nil {
 		return err
 	}
 	var oldOrigin, algo string
@@ -137,8 +196,19 @@ func SaveSnapshot(ctx context.Context, tx *sql.Tx, origin, root string, entries 
 	if err := tx.QueryRowContext(ctx, `SELECT origin,page_count,algorithm FROM snapshots WHERE root=?`, root).Scan(&oldOrigin, &count, &algo); err != nil {
 		return err
 	}
-	if oldOrigin != origin || count != len(entries) || algo != "binary-merkle-sha256-v1" {
+	if oldOrigin != origin || count != len(entries) || algo != merkle.SnapshotAlgorithm {
 		return fmt.Errorf("snapshot metadata collision")
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO snapshot_attestations(root,page_root,history_root,export_sha256,export_byte_length,revision_count) VALUES(?,?,?,?,?,?)`, root, pageRoot, historyRoot, sourceHash, sourceBytes, revisionCount); err != nil {
+		return err
+	}
+	var p, h, src string
+	var n, c int64
+	if err := tx.QueryRowContext(ctx, `SELECT page_root,history_root,export_sha256,export_byte_length,revision_count FROM snapshot_attestations WHERE root=?`, root).Scan(&p, &h, &src, &n, &c); err != nil {
+		return err
+	}
+	if p != pageRoot || h != historyRoot || src != sourceHash || n != sourceBytes || c != revisionCount {
+		return fmt.Errorf("snapshot attestation collision")
 	}
 	for _, e := range entries {
 		pk := PageKey(origin, e.PageID)
@@ -146,12 +216,18 @@ func SaveSnapshot(ctx context.Context, tx *sql.Tx, origin, root string, entries 
 			return err
 		}
 	}
-	var actual int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM snapshot_entries WHERE root=?`, root).Scan(&actual); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO snapshot_history_entries(root,page_key,source_page_id,namespace,title,source_revision_id,captured_timestamp,content_sha256) SELECT ?,page_key,source_page_id,namespace,title,source_revision_id,captured_timestamp,content_sha256 FROM temp.import_history`, root); err != nil {
 		return err
 	}
-	if actual != len(entries) {
-		return fmt.Errorf("snapshot entry count mismatch: %d versus %d", actual, len(entries))
+	var pages, history int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM snapshot_entries WHERE root=?`, root).Scan(&pages); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM snapshot_history_entries WHERE root=?`, root).Scan(&history); err != nil {
+		return err
+	}
+	if pages != int64(len(entries)) || history != revisionCount {
+		return fmt.Errorf("snapshot entry count mismatch")
 	}
 	return nil
 }
@@ -181,86 +257,4 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]SearchHi
 		hits = append(hits, h)
 	}
 	return hits, rows.Err()
-}
-
-// Verify recomputes raw blob SHA-256 hashes and every stored Merkle root.
-func (s *Store) Verify(ctx context.Context) (int, int, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT sha256,raw,byte_length FROM objects ORDER BY sha256`)
-	if err != nil {
-		return 0, 0, err
-	}
-	nObjects := 0
-	for rows.Next() {
-		var hash string
-		var data []byte
-		var n int
-		if err := rows.Scan(&hash, &data, &n); err != nil {
-			rows.Close()
-			return 0, 0, err
-		}
-		sum := sha256.Sum256(data)
-		if len(data) != n || hex.EncodeToString(sum[:]) != hash {
-			rows.Close()
-			return 0, 0, fmt.Errorf("object integrity failure for %s", hash)
-		}
-		nObjects++
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return 0, 0, err
-	}
-	snapshots, err := s.DB.QueryContext(ctx, `SELECT root,origin,page_count FROM snapshots ORDER BY root`)
-	if err != nil {
-		return nObjects, 0, err
-	}
-	type snapshot struct {
-		root, origin string
-		count        int
-	}
-	all := []snapshot{}
-	for snapshots.Next() {
-		var x snapshot
-		if err := snapshots.Scan(&x.root, &x.origin, &x.count); err != nil {
-			snapshots.Close()
-			return nObjects, 0, err
-		}
-		all = append(all, x)
-	}
-	err = snapshots.Err()
-	snapshots.Close()
-	if err != nil {
-		return nObjects, 0, err
-	}
-	if len(all) == 0 {
-		return nObjects, 0, errors.New("no snapshots present to verify")
-	}
-	for _, ss := range all {
-		erows, err := s.DB.QueryContext(ctx, `SELECT source_page_id,namespace,title,source_revision_id,content_sha256 FROM snapshot_entries WHERE root=?`, ss.root)
-		if err != nil {
-			return nObjects, 0, err
-		}
-		entries := []merkle.Entry{}
-		for erows.Next() {
-			e := merkle.Entry{Origin: ss.origin}
-			if err := erows.Scan(&e.PageID, &e.Namespace, &e.Title, &e.RevisionID, &e.ContentHash); err != nil {
-				erows.Close()
-				return nObjects, 0, err
-			}
-			entries = append(entries, e)
-		}
-		err = erows.Err()
-		erows.Close()
-		if err != nil {
-			return nObjects, 0, err
-		}
-		computed, err := merkle.Root(entries)
-		if err != nil {
-			return nObjects, 0, err
-		}
-		if ss.count != len(entries) || computed != ss.root {
-			return nObjects, 0, fmt.Errorf("snapshot integrity failure %s", ss.root)
-		}
-	}
-	return nObjects, len(all), nil
 }

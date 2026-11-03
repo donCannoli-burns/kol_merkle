@@ -25,3 +25,30 @@ func TestRejectInvalidPage(t *testing.T) {
 		t.Fatal("expected invalid page rejection")
 	}
 }
+
+func TestDecodedWikitextIsNotRawXMLText(t *testing.T) {
+	src := `<mediawiki><page><title>XML entity</title><ns>0</ns><id>4</id><revision><id>1</id><timestamp>2020-01-01T00:00:00Z</timestamp><text>A &amp; B &lt;tag&gt; <![CDATA[<raw>]]></text></revision></page></mediawiki>`
+	err := EachPage(strings.NewReader(src), func(p Page) error {
+		if got := p.Revisions[0].Text; got != "A & B <tag> <raw>" {
+			t.Errorf("decoded content: %q", got)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIncrementalRevisionLengthRejection(t *testing.T) {
+	src := `<mediawiki><page><title>Oversize</title><id>4</id><revision><id>1</id><timestamp>2020-01-01T00:00:00Z</timestamp><text>` + strings.Repeat("x", MaxRevisionTextBytes+1) + `</text></revision></page></mediawiki>`
+	if err := EachPage(strings.NewReader(src), func(Page) error { t.Fatal("oversized page visited"); return nil }); err == nil {
+		t.Fatal("oversize revision permitted")
+	}
+}
+
+func TestRawXMLRunLimit(t *testing.T) {
+	src := `<mediawiki><page><title>` + strings.Repeat("y", MaxRawXMLRunBytes+1) + `</title></page></mediawiki>`
+	if err := EachPage(strings.NewReader(src), func(Page) error { return nil }); err == nil {
+		t.Fatal("oversize raw token permitted")
+	}
+}

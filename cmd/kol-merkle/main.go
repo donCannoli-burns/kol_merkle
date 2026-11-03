@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -56,8 +58,13 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	case "verify":
 		f := flag.NewFlagSet("verify", flag.ContinueOnError)
 		dbfile := f.String("db", "kol-merkle.sqlite", "SQLite database path")
+		source := f.String("xml", "", "optional original XML export for independent byte-exact provenance verification")
+		root := f.String("root", "", "snapshot root required with -xml")
 		if err := f.Parse(args[1:]); err != nil {
 			return err
+		}
+		if (*source == "") != (*root == "") {
+			return errors.New("verify requires both -xml and -root when checking original export")
 		}
 		if _, err := os.Stat(*dbfile); err != nil {
 			return fmt.Errorf("open existing database: %w", err)
@@ -71,7 +78,24 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(out).Encode(map[string]any{"verified": true, "objects": objects, "snapshots": snapshots})
+		sourceVerified := false
+		if *source != "" {
+			file, err := os.Open(*source)
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+			h := sha256.New()
+			n, err := io.Copy(h, file)
+			if err != nil {
+				return err
+			}
+			if err := s.VerifySource(ctx, *root, hex.EncodeToString(h.Sum(nil)), n); err != nil {
+				return err
+			}
+			sourceVerified = true
+		}
+		return json.NewEncoder(out).Encode(map[string]any{"verified": true, "objects": objects, "snapshots": snapshots, "source_verified": sourceVerified})
 	case "search":
 		f := flag.NewFlagSet("search", flag.ContinueOnError)
 		dbfile := f.String("db", "kol-merkle.sqlite", "SQLite database path")
