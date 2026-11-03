@@ -119,6 +119,9 @@ func verifyRevisionRelations(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
+// verifyFTS enforces both logical row equality and the storage classes expected
+// by Search's Go Scan destinations. Numeric SQLite equality alone is unsafe:
+// unindexed FTS5 fields may hold TEXT "101.0" that compares equal to INTEGER 101.
 func verifyFTS(ctx context.Context, tx *sql.Tx) error {
 	var revisions, fts, matched, duplicated int64
 	for _, q := range []struct {
@@ -127,7 +130,12 @@ func verifyFTS(ctx context.Context, tx *sql.Tx) error {
 	}{
 		{`SELECT COUNT(*) FROM revisions`, &revisions},
 		{`SELECT COUNT(*) FROM revision_fts`, &fts},
-		{`SELECT COUNT(*) FROM revision_fts f JOIN revisions r ON f.page_key=r.page_key AND f.source_revision_id=r.source_revision_id JOIN objects o ON o.sha256=r.content_sha256 WHERE f.title=r.title COLLATE BINARY AND CAST(f.body AS BLOB)=o.raw`, &matched},
+		{`SELECT COUNT(*) FROM revision_fts f
+          JOIN revisions r ON f.page_key=r.page_key AND f.source_revision_id=r.source_revision_id
+          JOIN objects o ON o.sha256=r.content_sha256
+          WHERE typeof(f.page_key)='text' AND typeof(f.source_revision_id)='integer'
+            AND typeof(f.title)='text' AND typeof(f.body)='text'
+            AND f.title=r.title COLLATE BINARY AND CAST(f.body AS BLOB)=o.raw`, &matched},
 		{`SELECT COUNT(*) FROM (SELECT page_key,source_revision_id FROM revision_fts GROUP BY page_key,source_revision_id HAVING COUNT(*)<>1)`, &duplicated},
 	} {
 		if err := tx.QueryRowContext(ctx, q.query).Scan(q.dst); err != nil {
