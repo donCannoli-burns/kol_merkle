@@ -1,0 +1,10 @@
+<mediawiki xmlns="http://www.mediawiki.org/xml/export-0.11/" version="0.11" xml:lang="en">
+  <siteinfo><sitename>Fixture Wiki</sitename></siteinfo>
+  <page><title>Zmobie</title><ns>0</ns><id>31</id>
+    <revision><id>101</id><timestamp>2020-01-01T00:00:00Z</timestamp><text xml:space="preserve">An early Zmobie.</text></revision>
+    <revision><id>102</id><timestamp>2020-01-02T00:00:00Z</timestamp><text xml:space="preserve">An undead monster. [[Item:1]]</text></revision>
+  </page>
+  <page><title>Test Item</title><ns>0</ns><id>44</id>
+    <revision><id>201</id><timestamp>2020-01-03T00:00:00Z</timestamp><text xml:space="preserve">A synthetic item for tests.</text></revision>
+  </page>
+</mediawiki>
