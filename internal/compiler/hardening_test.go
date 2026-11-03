@@ -164,3 +164,39 @@ func TestFTSRevisionIDTypeConfusion(t *testing.T) {
 		t.Fatal("verify accepted coercible FTS revision ID TEXT despite broken Search")
 	}
 }
+
+ 
+// A bad second page must not publish an earlier valid page or its content.
+func TestUnavailableContentFailsClosedAndRollsBack(t *testing.T) {
+    cases := []struct{name, text string}{
+        {"deleted", `<text deleted="deleted"/>`},
+        {"external", `<text location="tt:42" bytes="12"/>`},
+        {"additional-slot", `<text>Main</text><content><role>auxiliary</role><text>Other</text></content>`},
+        {"missing-text", ``},
+    }
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            ctx := context.Background()
+            s, _, root := fixtureArchive(t)
+            initialObjects, initialSnapshots, err := s.Verify(ctx)
+            if err != nil { t.Fatal(err) }
+            src := `<mediawiki><page><title>Transient</title><ns>0</ns><id>900</id><revision><id>900</id><timestamp>2020-01-01T00:00:00Z</timestamp><text>must roll back</text></revision></page><page><title>Unavailable</title><ns>0</ns><id>901</id><revision><id>901</id><timestamp>2020-01-02T00:00:00Z</timestamp>` + tc.text + `</revision></page></mediawiki>`
+            if _, _, err := Compile(ctx, s, testOrigin, strings.NewReader(src)); err == nil {
+                t.Fatal("unsupported content was published")
+            }
+            objects, snapshots, err := s.Verify(ctx)
+            if err != nil || objects != initialObjects || snapshots != initialSnapshots {
+                t.Fatalf("archive changed after failure: objects=%d snapshots=%d error=%v", objects, snapshots, err)
+            }
+            var transients int
+            if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM pages WHERE source_page_id IN (900,901)`).Scan(&transients); err != nil {
+                t.Fatal(err)
+            }
+            if transients != 0 { t.Fatalf("partial import persisted: %d pages", transients) }
+            var retained string
+            if err := s.DB.QueryRowContext(ctx, `SELECT root FROM snapshots`).Scan(&retained); err != nil || retained != root {
+                t.Fatalf("original root changed: %s (%v)", retained, err)
+            }
+        })
+    }
+}
