@@ -49,6 +49,26 @@ an adversary able to rewrite the complete database can recompute all unkeyed
 hashes and fabricate a self-consistent replacement. Preserve roots outside the
 DB, use externally trusted signatures when needed, and retain source exports.
 
+## M0-R01 XML content admission boundary
+
+M0 imports exactly one inline main-slot wikitext `<text>` element per revision. A
+present and genuinely empty inline `<text/>` is distinct from absent content.
+Missing text, `deleted` or `location` markers, empty external-ID stubs,
+empty text with a positive declared byte size, additional `<content>` entries,
+wrapped `<slots>`, duplicate text elements, nested XML elements in text, and
+explicit non-wikitext content model/format, nested markup or attributes
+within interpreted revision scalar fields (`id`, `timestamp`, `model`,
+`format`), repeated metadata elements, unknown revision children, mismatched
+declared text byte counts, and repeated
+expanded XML text-attribute names (including `bytes`, `id`, `sha1` and
+`xml:space`) are rejected before the import transaction can commit. The byte count, when present,
+must equal the UTF-8 byte length of the XML-decoded text (not the number of
+characters or bytes in escaped XML markup). Exports that require those features must be handled
+by a future versioned representation; M0 does not fill them with empty text.
+The scope is an intentional fail-closed subset of MediaWiki XML, not full export
+coverage or a new security guarantee for untrusted XML. The document root and
+page-level extension admission remain outside this repair scope (R01-A04).
+
 ## Parser resource scope
 
 **M0 ingestion policy: only locally supplied, trusted XML exports are supported.**

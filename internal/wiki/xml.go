@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 )
 
 const (
@@ -22,6 +24,189 @@ type Revision struct {
 	ID        int64  `xml:"id"`
 	Timestamp string `xml:"timestamp"`
 	Text      string `xml:"text"`
+}
+
+
+// revisionInlineText decodes only inline text. Unknown attributes, external
+// payloads and inconsistent decoded byte lengths fail closed.
+type revisionInlineText struct {
+	value string
+}
+
+func (t *revisionInlineText) UnmarshalXML(dec *xml.Decoder, start xml.StartElement) error {
+	// encoding/xml does not reject duplicate attributes on StartElement.
+	// Inspect expanded names before interpreting any attribute values.
+	seenAttrs := make(map[xml.Name]bool, len(start.Attr))
+	for _, a := range start.Attr {
+		if seenAttrs[a.Name] {
+			return fmt.Errorf("duplicate revision text attribute %q", a.Name.Local)
+		}
+		seenAttrs[a.Name] = true
+	}
+
+	hasID := false
+	hasBytes := false
+	var declaredBytes int64
+	for _, a := range start.Attr {
+		switch {
+		case a.Name.Space == "" && (a.Name.Local == "deleted" || a.Name.Local == "location"):
+			return fmt.Errorf("revision text is unavailable: %s attribute", a.Name.Local)
+		case a.Name.Space == "" && a.Name.Local == "id":
+			hasID = true
+		case a.Name.Space == "" && a.Name.Local == "bytes":
+			n, err := strconv.ParseInt(a.Value, 10, 64)
+			if err != nil || n < 0 {
+				return fmt.Errorf("invalid revision text byte count %q", a.Value)
+			}
+			hasBytes, declaredBytes = true, n
+		case a.Name.Space == "" && a.Name.Local == "sha1":
+			// A source hint only; SHA-256 content commitments use decoded bytes.
+		case a.Name.Space == "http://www.w3.org/XML/1998/namespace" && a.Name.Local == "space":
+			if a.Value != "preserve" {
+				return fmt.Errorf("unsupported revision xml:space %q", a.Value)
+			}
+		default:
+			return fmt.Errorf("unsupported revision text attribute %q", a.Name.Local)
+		}
+	}
+	var body bytes.Buffer
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("revision inline text: %w", err)
+		}
+		switch v := tok.(type) {
+		case xml.CharData:
+			_, _ = body.Write(v)
+		case xml.EndElement:
+			if v.Name != start.Name {
+				return fmt.Errorf("unexpected inline text closing element")
+			}
+			t.value = body.String()
+			if hasBytes && int64(len(t.value)) != declaredBytes {
+				return fmt.Errorf("revision text byte count mismatch: declared=%d decoded=%d", declaredBytes, len(t.value))
+			}
+			if hasID && len(t.value) == 0 {
+				return fmt.Errorf("revision text has a content reference but no inline bytes")
+			}
+			return nil
+		default:
+			return fmt.Errorf("unsupported markup inside revision text")
+		}
+	}
+}
+
+// decodeRevisionScalar enforces XML scalar content without the nested-element
+// skipping behavior of encoding/xml DecodeElement on Go string/int fields.
+func decodeRevisionScalar(dec *xml.Decoder, start xml.StartElement) (string, error) {
+	if len(start.Attr) != 0 {
+		return "", fmt.Errorf("unsupported revision %s attributes", start.Name.Local)
+	}
+	var body bytes.Buffer
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", fmt.Errorf("revision %s scalar: %w", start.Name.Local, err)
+		}
+		switch v := tok.(type) {
+		case xml.CharData:
+			_, _ = body.Write(v)
+		case xml.EndElement:
+			if v.Name != start.Name {
+				return "", fmt.Errorf("unexpected revision %s scalar close", start.Name.Local)
+			}
+			return body.String(), nil
+		default:
+			return "", fmt.Errorf("unsupported markup inside revision %s scalar", start.Name.Local)
+		}
+	}
+}
+
+// UnmarshalXML admits only the supported MediaWiki revision children. Unknown
+// or repeated metadata must not override content-model interpretation.
+func (r *Revision) UnmarshalXML(dec *xml.Decoder, start xml.StartElement) error {
+	if len(start.Attr) != 0 {
+		return fmt.Errorf("unsupported revision attributes")
+	}
+	var parsed Revision
+	seen := make(map[string]bool)
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("revision XML: %w", err)
+		}
+		switch el := tok.(type) {
+		case xml.CharData:
+			if len(bytes.TrimSpace(el)) != 0 {
+				return fmt.Errorf("unexpected direct revision character data")
+			}
+		case xml.StartElement:
+			if el.Name.Space != start.Name.Space {
+				return fmt.Errorf("unsupported revision element namespace %q", el.Name.Space)
+			}
+			name := el.Name.Local
+			switch name {
+			case "id", "parentid", "timestamp", "contributor", "minor", "comment", "origin", "model", "format", "text", "sha1":
+				// RevisionType members allowed by the MediaWiki export-0.11 schema.
+			default:
+				return fmt.Errorf("unsupported revision element %q", name)
+			}
+			if seen[name] {
+				return fmt.Errorf("duplicate revision element %q", name)
+			}
+			seen[name] = true
+			switch name {
+			case "id":
+				value, err := decodeRevisionScalar(dec, el)
+				if err != nil {
+					return fmt.Errorf("revision id: %w", err)
+				}
+				id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+				if err != nil {
+					return fmt.Errorf("revision id: %w", err)
+				}
+				parsed.ID = id
+			case "timestamp":
+				value, err := decodeRevisionScalar(dec, el)
+				if err != nil {
+					return fmt.Errorf("revision timestamp: %w", err)
+				}
+				parsed.Timestamp = value
+			case "model", "format":
+				value, err := decodeRevisionScalar(dec, el)
+				if err != nil {
+					return fmt.Errorf("revision %s: %w", name, err)
+				}
+				if name == "model" && value != "wikitext" {
+					return fmt.Errorf("unsupported revision content model %q", value)
+				}
+				if name == "format" && value != "text/x-wiki" {
+					return fmt.Errorf("unsupported revision content format %q", value)
+				}
+			case "text":
+				var value revisionInlineText
+				if err := dec.DecodeElement(&value, &el); err != nil {
+					return fmt.Errorf("revision text: %w", err)
+				}
+				parsed.Text = value.value
+			default:
+				// Metadata ignored for the M0 wikitext commitment. It remains
+				// bound as raw XML in the original export-byte commitment.
+				if err := dec.Skip(); err != nil {
+					return fmt.Errorf("revision %s: %w", name, err)
+				}
+			}
+		case xml.EndElement:
+			if el.Name != start.Name {
+				return fmt.Errorf("unexpected revision closing element %q", el.Name.Local)
+			}
+			if !seen["id"] || !seen["timestamp"] || !seen["text"] {
+				return fmt.Errorf("revision requires exactly one id, timestamp and inline text")
+			}
+			*r = parsed
+			return nil
+		}
+	}
 }
 
 type Page struct {
