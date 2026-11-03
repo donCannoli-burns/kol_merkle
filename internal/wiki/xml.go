@@ -26,79 +26,84 @@ type Revision struct {
 }
 
 
- 
 // revisionInlineText decodes only inline text. An absent, deleted, or external
 // payload must never become the SHA-256 of a known-empty revision.
 type revisionInlineText struct {
-    value string
+	value string
 }
 
 func (t *revisionInlineText) UnmarshalXML(dec *xml.Decoder, start xml.StartElement) error {
-    hasID := false
-    hasBytes := false
-    var declaredBytes int64
-    for _, a := range start.Attr {
-        switch a.Name.Local {
-        case "deleted", "location":
-            return fmt.Errorf("revision text is unavailable: %s attribute", a.Name.Local)
-        case "id":
-            hasID = true
-        case "bytes":
-            n, err := strconv.ParseInt(a.Value, 10, 64)
-            if err != nil || n < 0 {
-                return fmt.Errorf("invalid revision text byte count %q", a.Value)
-            }
-            hasBytes, declaredBytes = true, n
-        }
-    }
-    var body bytes.Buffer
-    for {
-        tok, err := dec.Token()
-        if err != nil { return fmt.Errorf("revision inline text: %w", err) }
-        switch v := tok.(type) {
-        case xml.CharData:
-            _, _ = body.Write(v)
-        case xml.EndElement:
-            if v.Name != start.Name { return fmt.Errorf("unexpected inline text closing element") }
-            t.value = body.String()
-            if len(t.value) == 0 && (hasID || (hasBytes && declaredBytes > 0)) {
-                return fmt.Errorf("revision text has a content reference or nonzero declared size but no inline bytes")
-            }
-            return nil
-        default:
-            return fmt.Errorf("unsupported markup inside revision text")
-        }
-    }
+	hasID := false
+	hasBytes := false
+	var declaredBytes int64
+	for _, a := range start.Attr {
+		switch a.Name.Local {
+		case "deleted", "location":
+			return fmt.Errorf("revision text is unavailable: %s attribute", a.Name.Local)
+		case "id":
+			hasID = true
+		case "bytes":
+			n, err := strconv.ParseInt(a.Value, 10, 64)
+			if err != nil || n < 0 {
+				return fmt.Errorf("invalid revision text byte count %q", a.Value)
+			}
+			hasBytes, declaredBytes = true, n
+		}
+	}
+	var body bytes.Buffer
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("revision inline text: %w", err)
+		}
+		switch v := tok.(type) {
+		case xml.CharData:
+			_, _ = body.Write(v)
+		case xml.EndElement:
+			if v.Name != start.Name {
+				return fmt.Errorf("unexpected inline text closing element")
+			}
+			t.value = body.String()
+			if len(t.value) == 0 && (hasID || (hasBytes && declaredBytes > 0)) {
+				return fmt.Errorf("revision text has a content reference or nonzero declared size but no inline bytes")
+			}
+			return nil
+		default:
+			return fmt.Errorf("unsupported markup inside revision text")
+		}
+	}
 }
 
 // UnmarshalXML enforces the M0 representation: exactly one inline main text,
 // with no content slots or external/redacted payloads. Older exports without
 // model/format metadata remain accepted.
 func (r *Revision) UnmarshalXML(dec *xml.Decoder, start xml.StartElement) error {
-    var wire struct {
-        ID int64 `xml:"id"`
-        Timestamp string `xml:"timestamp"`
-        Text []revisionInlineText `xml:"text"`
-        Content []struct{} `xml:"content"`
-        Slots []struct{} `xml:"slots"`
-        Model string `xml:"model"`
-        Format string `xml:"format"`
-    }
-    if err := dec.DecodeElement(&wire, &start); err != nil { return err }
-    if len(wire.Content) != 0 || len(wire.Slots) != 0 {
-        return fmt.Errorf("additional or wrapped revision content slots are unsupported by M0")
-    }
-    if wire.Model != "" && wire.Model != "wikitext" {
-        return fmt.Errorf("unsupported revision content model %q", wire.Model)
-    }
-    if wire.Format != "" && wire.Format != "text/x-wiki" {
-        return fmt.Errorf("unsupported revision content format %q", wire.Format)
-    }
-    if len(wire.Text) != 1 {
-        return fmt.Errorf("revision requires exactly one inline text element; got %d", len(wire.Text))
-    }
-    *r = Revision{ID: wire.ID, Timestamp: wire.Timestamp, Text: wire.Text[0].value}
-    return nil
+	var wire struct {
+		ID        int64                `xml:"id"`
+		Timestamp string               `xml:"timestamp"`
+		Text      []revisionInlineText `xml:"text"`
+		Content   []struct{}           `xml:"content"`
+		Slots     []struct{}           `xml:"slots"`
+		Model     string               `xml:"model"`
+		Format    string               `xml:"format"`
+	}
+	if err := dec.DecodeElement(&wire, &start); err != nil {
+		return err
+	}
+	if len(wire.Content) != 0 || len(wire.Slots) != 0 {
+		return fmt.Errorf("additional or wrapped revision content slots are unsupported by M0")
+	}
+	if wire.Model != "" && wire.Model != "wikitext" {
+		return fmt.Errorf("unsupported revision content model %q", wire.Model)
+	}
+	if wire.Format != "" && wire.Format != "text/x-wiki" {
+		return fmt.Errorf("unsupported revision content format %q", wire.Format)
+	}
+	if len(wire.Text) != 1 {
+		return fmt.Errorf("revision requires exactly one inline text element; got %d", len(wire.Text))
+	}
+	*r = Revision{ID: wire.ID, Timestamp: wire.Timestamp, Text: wire.Text[0].value}
+	return nil
 }
 
 type Page struct {
