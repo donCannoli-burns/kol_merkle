@@ -22,6 +22,21 @@ even when the v2 Merkle verification checks passed.
 - Keep v2 Merkle algorithms, history semantics, SQLite schema, and FTS unchanged.
 - Exercise decoder admission matrix and transactional rollback after a valid page.
 
+## Formal review repair — PR4-FR-01
+
+Review `5760804875` at head `7c4cfad34ebe5342f303922dbf4891d59b8eaf67`
+reported nested XML can be ignored by `encoding/xml` when decoding
+`model` and `format` into Go strings. Interpreted revision scalar
+fields (`id`, `timestamp`, `model`, `format`) now admit only decoded
+character data and matching end tags. Nested markup and unexpected
+attributes fail closed; positive entity/CDATA and negative nested-element
+parser cases, plus valid-first-page / invalid-second-page rollback tests,
+cover the correction.
+
+This is not a formal approval. New exact-head CI and non-author review
+remain required. Root validation R01-A04, full XML schema compliance
+and hostile-XML heap guarantees remain deferred.
+
 ## Required acceptance
 
 1. Stdlib XML parser regressions pass.

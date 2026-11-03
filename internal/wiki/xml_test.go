@@ -63,6 +63,15 @@ func TestRevisionInlineContentAdmission(t *testing.T) {
 		{name: "empty-inline", body: `<text/>`, wantText: ""},
 		{name: "empty-bytes-zero", body: `<text bytes="0"></text>`, wantText: ""},
 		{name: "explicit-wikitext", body: `<model>wikitext</model><format>text/x-wiki</format><text>valid</text>`, wantText: "valid"},
+		{name: "scalar-entity-decoding", body: `<model>wiki&#116;ext</model><format>text/x-w&#105;ki</format><text>valid</text>`, wantText: "valid"},
+		{name: "scalar-cdata", body: `<model>wiki<![CDATA[text]]></model><format><![CDATA[text/x-wiki]]></format><text>valid</text>`, wantText: "valid"},
+		{name: "nested-model-after-valid", body: `<model>wikitext<unknown>json</unknown></model><format>text/x-wiki</format><text>body</text>`, wantErr: true},
+		{name: "nested-model-before-valid", body: `<model><unknown>json</unknown>wikitext</model><text>body</text>`, wantErr: true},
+		{name: "nested-model-namespaced", body: `<model>wikitext<alt:unknown xmlns:alt="urn:invalid">json</alt:unknown></model><text>body</text>`, wantErr: true},
+		{name: "nested-format-after-valid", body: `<format>text/x-wiki<unknown>application/json</unknown></format><text>body</text>`, wantErr: true},
+		{name: "nested-format-before-valid", body: `<format><unknown>application/json</unknown>text/x-wiki</format><text>body</text>`, wantErr: true},
+		{name: "nested-scalar-comment", body: `<model>wiki<!--hidden-->text</model><text>body</text>`, wantErr: true},
+		{name: "model-scalar-attribute", body: `<model unexpected="ignored">wikitext</model><text>body</text>`, wantErr: true},
 		{name: "valid-meta", body: `<parentid>9</parentid><contributor><username>A</username></contributor><minor/><comment>ok</comment><origin>9</origin><model>wikitext</model><format>text/x-wiki</format><text bytes="5">hello</text><sha1>dummy</sha1>`, wantText: "hello"},
 		{name: "entity-byte-count", body: `<text bytes="5">A &amp; B</text>`, wantText: "A & B"},
 		{name: "utf8-byte-count", body: `<text bytes="2">é</text>`, wantText: "é"},
@@ -122,6 +131,31 @@ func TestRevisionInlineContentAdmission(t *testing.T) {
 			}
 			if tc.wantErr && visited != 0 { t.Fatalf("invalid revision was admitted") }
 			if !tc.wantErr && visited != 1 { t.Fatalf("valid revision was not admitted") }
+		})
+	}
+}
+
+// TestRevisionIdentityScalarMarkup ensures identity scalars cannot hide nested XML.
+func TestRevisionIdentityScalarMarkup(t *testing.T) {
+	cases := []struct {
+		name, id, timestamp string
+		wantErr bool
+	}{
+		{name: "plain", id: `<id>1</id>`, timestamp: `<timestamp>2020-01-01T00:00:00Z</timestamp>`},
+		{name: "whitespace-id", id: `<id> 1 </id>`, timestamp: `<timestamp>2020-01-01T00:00:00Z</timestamp>`},
+		{name: "entity-id", id: `<id>&#49;</id>`, timestamp: `<timestamp>2020-01-01T00:00:00Z</timestamp>`},
+		{name: "nested-id", id: `<id>1<unknown>2</unknown></id>`, timestamp: `<timestamp>2020-01-01T00:00:00Z</timestamp>`, wantErr: true},
+		{name: "nested-timestamp", id: `<id>1</id>`, timestamp: `<timestamp>2020-01-01T00:00:00Z<unknown>2035</unknown></timestamp>`, wantErr: true},
+		{name: "id-attribute", id: `<id unexpected="ignored">1</id>`, timestamp: `<timestamp>2020-01-01T00:00:00Z</timestamp>`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `<mediawiki><page><title>Scalar</title><ns>0</ns><id>99</id><revision>` + tc.id + tc.timestamp + `<text>body</text></revision></page></mediawiki>`
+			visited := 0
+			err := EachPage(strings.NewReader(src), func(Page) error { visited++; return nil })
+			if (err != nil) != tc.wantErr { t.Fatalf("error = %v; wantErr = %v", err, tc.wantErr) }
+			if tc.wantErr && visited != 0 { t.Fatal("invalid identity scalar was admitted") }
+			if !tc.wantErr && visited != 1 { t.Fatal("valid identity scalar was not admitted") }
 		})
 	}
 }

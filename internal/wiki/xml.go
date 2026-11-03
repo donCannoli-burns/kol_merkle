@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -95,6 +96,32 @@ func (t *revisionInlineText) UnmarshalXML(dec *xml.Decoder, start xml.StartEleme
 	}
 }
 
+// decodeRevisionScalar enforces XML scalar content without the nested-element
+// skipping behavior of encoding/xml DecodeElement on Go string/int fields.
+func decodeRevisionScalar(dec *xml.Decoder, start xml.StartElement) (string, error) {
+	if len(start.Attr) != 0 {
+		return "", fmt.Errorf("unsupported revision %s attributes", start.Name.Local)
+	}
+	var body bytes.Buffer
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", fmt.Errorf("revision %s scalar: %w", start.Name.Local, err)
+		}
+		switch v := tok.(type) {
+		case xml.CharData:
+			_, _ = body.Write(v)
+		case xml.EndElement:
+			if v.Name != start.Name {
+				return "", fmt.Errorf("unexpected revision %s scalar close", start.Name.Local)
+			}
+			return body.String(), nil
+		default:
+			return "", fmt.Errorf("unsupported markup inside revision %s scalar", start.Name.Local)
+		}
+	}
+}
+
 // UnmarshalXML admits only the supported MediaWiki revision children. Unknown
 // or repeated metadata must not override content-model interpretation.
 func (r *Revision) UnmarshalXML(dec *xml.Decoder, start xml.StartElement) error {
@@ -130,16 +157,24 @@ func (r *Revision) UnmarshalXML(dec *xml.Decoder, start xml.StartElement) error 
 			seen[name] = true
 			switch name {
 			case "id":
-				if err := dec.DecodeElement(&parsed.ID, &el); err != nil {
+				value, err := decodeRevisionScalar(dec, el)
+				if err != nil {
 					return fmt.Errorf("revision id: %w", err)
 				}
+				id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+				if err != nil {
+					return fmt.Errorf("revision id: %w", err)
+				}
+				parsed.ID = id
 			case "timestamp":
-				if err := dec.DecodeElement(&parsed.Timestamp, &el); err != nil {
+				value, err := decodeRevisionScalar(dec, el)
+				if err != nil {
 					return fmt.Errorf("revision timestamp: %w", err)
 				}
+				parsed.Timestamp = value
 			case "model", "format":
-				var value string
-				if err := dec.DecodeElement(&value, &el); err != nil {
+				value, err := decodeRevisionScalar(dec, el)
+				if err != nil {
 					return fmt.Errorf("revision %s: %w", name, err)
 				}
 				if name == "model" && value != "wikitext" {
