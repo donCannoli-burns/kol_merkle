@@ -232,6 +232,9 @@ func (s *Store) Verify(ctx context.Context) (int, int, error) {
 	if err != nil {
 		return nObjects, 0, err
 	}
+	if len(all) == 0 {
+		return nObjects, 0, errors.New("no snapshots present to verify")
+	}
 	for _, ss := range all {
 		erows, err := s.DB.QueryContext(ctx, `SELECT source_page_id,namespace,title,source_revision_id,content_sha256 FROM snapshot_entries WHERE root=?`, ss.root)
 		if err != nil {

@@ -55,3 +55,15 @@ func TestCompileIdempotentAndVerify(t *testing.T) {
 		t.Fatalf("rollback failed after collision: %v %d %d", err, obj2, snap2)
 	}
 }
+
+func TestVerifyRejectsEmptyArchive(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "empty.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, _, err := s.Verify(ctx); err == nil {
+		t.Fatal("empty archive incorrectly verified")
+	}
+}

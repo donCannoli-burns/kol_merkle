@@ -59,6 +59,9 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		if err := f.Parse(args[1:]); err != nil {
 			return err
 		}
+		if _, err := os.Stat(*dbfile); err != nil {
+			return fmt.Errorf("open existing database: %w", err)
+		}
 		s, err := store.Open(ctx, *dbfile)
 		if err != nil {
 			return err
@@ -79,6 +82,9 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		}
 		if *query == "" {
 			return errors.New("search requires -q")
+		}
+		if _, err := os.Stat(*dbfile); err != nil {
+			return fmt.Errorf("open existing database: %w", err)
 		}
 		s, err := store.Open(ctx, *dbfile)
 		if err != nil {

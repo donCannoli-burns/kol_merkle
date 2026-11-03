@@ -8,7 +8,9 @@ Planning input: `kol_merkle_V0.0.0.0-1_full_project.zip`
 - Indexed ZIP payload integrity: `12/12 PASS`; ZIP CRC integrity: `PASS`
 - Go standard-library unit tests: `internal/wiki` and `internal/merkle` PASS
 - SQLite DDL validated with Python sqlite3; FTS5 snippet query passed
-- Full Go integration tests: **NOT RUN** (runtime DNS cannot resolve `proxy.golang.org` to obtain `modernc.org/sqlite`)
+- Full Go integration tests + `go vet` in GitHub Actions run `41582984843`: PASS
+- PR-associated GitHub Actions run `41582990090`: PASS
+- Offline local full-test limitation: runtime DNS cannot resolve `proxy.golang.org`; independent runner verified Go tests
 - Release disposition: **M0_CANDIDATE__CI_AND_INDEPENDENT_REVIEW_REQUIRED**
 
 This is a source-code bootstrap candidate, not a verified production release, a complete mirror, or a full implementation of Context Tree Studio's planning scaffold.
