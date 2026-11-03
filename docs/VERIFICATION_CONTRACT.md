@@ -32,7 +32,9 @@ fields. The export's SHA-256 anchors the original XML representation separately.
 ## Verification scope
 
 `verify` checks immutable object bytes, revision relationships, page identity,
-FTS5 row-to-revision/body consistency, FTS5 internal integrity, v2 historical
+FTS5 row-to-revision/body consistency including strict storage classes
+(`page_key`, `title`, `body` must be SQLite TEXT; `source_revision_id` must
+be SQLite INTEGER), FTS5 internal integrity, v2 historical
 memberships, current-selection consistency, all roots and all retained revision
 coverage. It does not silently repair an inconsistent database.
 
@@ -48,6 +50,12 @@ hashes and fabricate a self-consistent replacement. Preserve roots outside the
 DB, use externally trusted signatures when needed, and retain source exports.
 
 ## Parser resource scope
+
+**M0 ingestion policy: only locally supplied, trusted XML exports are supported.**
+Do not process attacker-controlled or unknown-provenance XML as if its decoded
+memory use were bounded. The importer is not an XML sandbox. The local-only
+entrypoint is an acquisition boundary, not a security boundary: a downloaded
+file may still be hostile.
 
 The parser validates individual revision sizes, total page text and revision
 count during incremental page assembly; an additional raw XML-run cap prevents
@@ -65,3 +73,18 @@ duplicating FTS rows, changing current/history snapshot entries, or modifying
 source byte-length metadata. Reimporting a known revision with the same decoded
 text but different timestamp/title must abort and rollback. V1 snapshots must
 fail closed. The Go/SQLite test suite must pass in the pinned CI environment.
+
+## Independent re-audit follow-up
+
+A textual FTS5 revision ID such as `101.0` can compare equal to integer `101`
+under SQLite numeric affinity, while `database/sql` rejects scanning it into
+Go `int64`. M0 now checks the SQLite storage class of each matched FTS field
+before declaring verification success. Disposable-database regressions include
+`101.0` (TEXT), `101` (TEXT), `101.0` (REAL), and BLOB body storage, in addition
+to the original eight integrity mutations.
+
+A fixed XML input byte limit, per-page limits, and uninterrupted raw-run caps
+do not impose a strict heap limit. Fragmented CDATA can still trigger large
+`encoding/xml` allocations before per-revision checks run, and the compiler's
+page map grows with imported page count. A dedicated hostile-XML sandbox and
+strict memory/page budgets are deferred, **not** represented as completed.

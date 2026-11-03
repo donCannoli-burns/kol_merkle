@@ -42,6 +42,10 @@ func TestAdversarialVerification(t *testing.T) {
 		{"rewrite-revision-timestamp", `UPDATE revisions SET captured_timestamp='1999-01-01T00:00:00Z' WHERE source_revision_id=101`},
 		{"forge-fts-body", `UPDATE revision_fts SET body='never existed in any blob' WHERE source_revision_id=101`},
 		{"duplicate-fts-row", `INSERT INTO revision_fts(page_key,source_revision_id,title,body) SELECT page_key,source_revision_id,title,body FROM revision_fts LIMIT 1`},
+		{"fts-revision-id-text-decimal", `UPDATE revision_fts SET source_revision_id='101.0' WHERE source_revision_id=101`},
+		{"fts-revision-id-text-integer", `UPDATE revision_fts SET source_revision_id='101' WHERE source_revision_id=101`},
+		{"fts-revision-id-real", `UPDATE revision_fts SET source_revision_id=101.0 WHERE source_revision_id=101`},
+		{"fts-body-storage-class", `UPDATE revision_fts SET body=CAST(body AS BLOB) WHERE source_revision_id=101`},
 		{"delete-history-membership", `DELETE FROM snapshot_history_entries WHERE source_revision_id=101`},
 		{"forge-snapshot-title", `UPDATE snapshot_entries SET title='untrue snapshot title' WHERE source_revision_id=102`},
 		{"forge-history-timestamp", `UPDATE snapshot_history_entries SET captured_timestamp='1999-01-01T00:00:00Z' WHERE source_revision_id=101`},
@@ -129,5 +133,34 @@ func TestLegacySnapshotFailsClosed(t *testing.T) {
 	}
 	if _, _, err := s.Verify(ctx); err == nil {
 		t.Fatal("v1 archive was incorrectly treated as fully verified")
+	}
+}
+
+// TestFTSRevisionIDTypeConfusion verifies the exact failure path reported by
+// the independent audit with the real SQLite driver: coercible FTS TEXT joins
+// an INTEGER revision, but Search cannot scan the string "101.0" into int64.
+// The verifier must reject the archive before it can be reported as valid.
+func TestFTSRevisionIDTypeConfusion(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := fixtureArchive(t)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE revision_fts SET source_revision_id='101.0' WHERE source_revision_id=101`); err != nil {
+		t.Fatal(err)
+	}
+	var storageClass string
+	var numericJoin int
+	if err := s.DB.QueryRowContext(ctx, `SELECT typeof(source_revision_id) FROM revision_fts WHERE body='An early Zmobie.'`).Scan(&storageClass); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM revision_fts f JOIN revisions r ON f.page_key=r.page_key AND f.source_revision_id=r.source_revision_id WHERE r.source_revision_id=101`).Scan(&numericJoin); err != nil {
+		t.Fatal(err)
+	}
+	if storageClass != "text" || numericJoin != 1 {
+		t.Fatalf("failed to reproduce SQLite type confusion: storage=%q numeric_join=%d", storageClass, numericJoin)
+	}
+	if _, err := s.Search(ctx, "early", 10); err == nil {
+		t.Fatal("expected Go int64 search scan error for textual revision ID 101.0")
+	}
+	if _, _, err := s.Verify(ctx); err == nil {
+		t.Fatal("verify accepted coercible FTS revision ID TEXT despite broken Search")
 	}
 }

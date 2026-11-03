@@ -20,9 +20,9 @@ The CLI never fetches remote pages. Input is local MediaWiki XML supplied explic
 ### Current limits
 
 - The importer retains wiki revision text; template expansion, HTML rendering, backlinks, categories, Cargo entity IDs, media files, historical queries, permissions, and agent APIs are **not built**.
-- The XML file size limit defaults to 2 GiB; individual revision text is limited to 16 MiB, cumulative text per page to 128 MiB, and long raw XML spans to 32 MiB. This is an experimental importer, not yet hardened against all hostile XML or filesystem failures.
+- **M0 accepts trusted, locally supplied XML exports only.** Downloaded or unknown-provenance exports are not automatically trustworthy. The XML file size limit defaults to 2 GiB; individual revision text is limited to 16 MiB, cumulative text per page to 128 MiB, and long raw XML spans to 32 MiB. Fragmented CDATA can bypass the raw-run limit, and the per-page map grows with page count; these limits **do not** provide a strict memory guarantee. Do not process hostile XML without separate process isolation and resource budgets.
 - Search indexes raw revision text through SQLite FTS5. Historical revisions are searchable, not only the latest.
-- The `verify` command checks blob hashes, all revisions, FTS5 records/index integrity, historical membership, and v2 snapshot roots. V1 snapshots intentionally fail closed. Optional `-root` and `-xml` independently match a source export. It is not a signed attestation and cannot establish upstream authenticity on its own.
+- The `verify` command checks blob hashes, all revisions, FTS5 records/index integrity including storage types required by Go search, historical membership, and v2 snapshot roots. V1 snapshots intentionally fail closed. Optional `-root` and `-xml` independently match a source export. It is not a signed attestation and cannot establish upstream authenticity on its own.
 - Repository code is not a distribution of wiki content. Confirm source licensing, access rules, and consent before importing or redistributing third-party wiki archives.
 
 ## Planning and provenance
