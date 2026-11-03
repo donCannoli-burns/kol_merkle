@@ -172,6 +172,10 @@ func TestUnavailableContentFailsClosedAndRollsBack(t *testing.T) {
 		{"external", `<text location="tt:42" bytes="12"/>`},
 		{"additional-slot", `<text>Main</text><content><role>auxiliary</role><text>Other</text></content>`},
 		{"missing-text", ``},
+		{"duplicate-model", `<model>wikitext</model><model>wikitext</model><text>body</text>`},
+		{"duplicate-format", `<format>text/x-wiki</format><format>text/x-wiki</format><text>body</text>`},
+		{"byte-count-mismatch", `<text bytes="20">body</text>`},
+		{"unknown-revision-child", `<text>body</text><custom>hidden</custom>`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
