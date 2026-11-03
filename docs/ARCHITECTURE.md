@@ -2,9 +2,9 @@
 
 ## Implemented in bootstrap
 
-Local XML stream -> validated wiki page/revision records -> immutable SHA-256 object store -> SQLite revisions + FTS5 -> deterministic Merkle snapshot root -> verify/search CLI.
+Local XML stream -> validated wiki page/revision records -> immutable SHA-256 object store -> SQLite revisions + FTS5 -> versioned current-page Merkle + full-history/source commitments -> independent verification and search CLI.
 
-The importer runs in a single SQLite transaction. A conflicting revision hash is rejected; a failed import does not partially publish objects or snapshots. The SQLite database is the local canonical artifact. Page identities are scoped to a caller-supplied origin and source page ID. Snapshot roots identify a particular subset of exported pages.
+The importer runs in a single SQLite transaction. A conflicting revision hash, timestamp, or title is rejected; a failed import does not partially publish objects or snapshots. The SQLite database is the local canonical artifact. Page identities are scoped to a caller-supplied origin and source page ID. V2 snapshot roots bind the particular exported page subset, all included revision metadata, and the exact source export digest. Full archive authentication still requires a trusted external root or signature.
 
 ## Explicitly not implemented
 

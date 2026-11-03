@@ -3,7 +3,9 @@ package compiler
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"io"
 
@@ -12,11 +14,8 @@ import (
 	"github.com/donCannoli-burns/kol_merkle/internal/wiki"
 )
 
-const MaxPageRevisions = 100000
-const MaxTextBytes = 16 << 20
-
-// Compile accepts a bounded stream and preserves all revisions in one transaction.
-// Snapshot roots describe only the pages supplied in this import, not the whole wiki.
+// Compile commits both current-page and full-history commitments, with the
+// byte-exact SHA-256 of the supplied XML export bound into the snapshot root.
 func Compile(ctx context.Context, s *store.Store, origin string, r io.Reader) (string, int, error) {
 	if origin == "" {
 		return "", 0, fmt.Errorf("origin required")
@@ -26,16 +25,13 @@ func Compile(ctx context.Context, s *store.Store, origin string, r io.Reader) (s
 		return "", 0, err
 	}
 	defer tx.Rollback()
+	if err := store.BeginImportHistory(ctx, tx); err != nil {
+		return "", 0, err
+	}
 	byPage := map[int64]merkle.Entry{}
-	err = wiki.EachPage(r, func(p wiki.Page) error {
-		if len(p.Revisions) > MaxPageRevisions {
-			return fmt.Errorf("too many revisions in page %d", p.ID)
-		}
-		for _, rev := range p.Revisions {
-			if len(rev.Text) > MaxTextBytes {
-				return fmt.Errorf("page %d revision %d exceeds text limit", p.ID, rev.ID)
-			}
-		}
+	digest := sha256.New()
+	counter := &byteCounter{reader: io.TeeReader(r, digest)}
+	err = wiki.EachPage(counter, func(p wiki.Page) error {
 		if _, exists := byPage[p.ID]; exists {
 			return fmt.Errorf("duplicate source page ID %d", p.ID)
 		}
@@ -56,15 +52,38 @@ func Compile(ctx context.Context, s *store.Store, origin string, r io.Reader) (s
 	for _, e := range byPage {
 		entries = append(entries, e)
 	}
-	root, err := merkle.Root(entries)
+	pageRoot, err := merkle.Root(entries)
 	if err != nil {
 		return "", 0, err
 	}
-	if err = store.SaveSnapshot(ctx, tx, origin, root, entries); err != nil {
+	historyRoot, nRevisions, err := store.StagedHistoryRoot(ctx, tx, origin)
+	if err != nil {
 		return "", 0, err
 	}
-	if err = tx.Commit(); err != nil {
+	exportHash := hex.EncodeToString(digest.Sum(nil))
+	root, err := merkle.SnapshotV2Root(origin, pageRoot, historyRoot, exportHash, counter.n)
+	if err != nil {
+		return "", 0, err
+	}
+	if err := store.SaveSnapshot(ctx, tx, origin, root, entries, pageRoot, historyRoot, exportHash, counter.n, nRevisions); err != nil {
+		return "", 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE temp.import_history`); err != nil {
+		return "", 0, err
+	}
+	if err := tx.Commit(); err != nil {
 		return "", 0, err
 	}
 	return root, len(entries), nil
+}
+
+type byteCounter struct {
+	reader io.Reader
+	n      int64
+}
+
+func (c *byteCounter) Read(p []byte) (int, error) {
+	n, err := c.reader.Read(p)
+	c.n += int64(n)
+	return n, err
 }
