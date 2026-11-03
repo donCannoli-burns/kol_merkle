@@ -33,6 +33,17 @@ even when the v2 Merkle verification checks passed.
 
 ## Independent audit follow-up
 
+A subsequent exact-head source re-audit at
+`985be9043b41b7362393ddacad673361dd76bcc3` found R01-R02-01:
+`encoding/xml` permits duplicate attribute names in a token, allowing
+the last `bytes` value to conceal an earlier contradictory declaration.
+The follow-up checks repeated expanded `xml.Name` identities before decoding
+any text attribute values. Regression cases cover duplicate `bytes`, `id`,
+`sha1` and `xml:space` attributes and transactional rollback of an
+ambiguous byte declaration. These fixtures are intentionally malformed XML;
+the objective is to reject, not reinterpret, ambiguous input.
+Independent re-audit of the new head remains required.
+
 The independent report at head `e26687bc315c9cf80cb5f004d7aacebdb56ca34e`
 reported `GO_HARDENING_REQUIRED` for R01-A01 (duplicate metadata),
 R01-A02 (declared bytes), and R01-A03 (unknown revision child). The scoped

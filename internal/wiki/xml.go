@@ -33,6 +33,16 @@ type revisionInlineText struct {
 }
 
 func (t *revisionInlineText) UnmarshalXML(dec *xml.Decoder, start xml.StartElement) error {
+	// encoding/xml does not reject duplicate attributes on StartElement.
+	// Inspect expanded names before interpreting any attribute values.
+	seenAttrs := make(map[xml.Name]bool, len(start.Attr))
+	for _, a := range start.Attr {
+		if seenAttrs[a.Name] {
+			return fmt.Errorf("duplicate revision text attribute %q", a.Name.Local)
+		}
+		seenAttrs[a.Name] = true
+	}
+
 	hasID := false
 	hasBytes := false
 	var declaredBytes int64

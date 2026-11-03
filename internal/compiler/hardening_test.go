@@ -175,6 +175,7 @@ func TestUnavailableContentFailsClosedAndRollsBack(t *testing.T) {
 		{"duplicate-model", `<model>wikitext</model><model>wikitext</model><text>body</text>`},
 		{"duplicate-format", `<format>text/x-wiki</format><format>text/x-wiki</format><text>body</text>`},
 		{"byte-count-mismatch", `<text bytes="20">body</text>`},
+		{"duplicate-bytes-attributes", `<text bytes="999" bytes="5">hello</text>`},
 		{"unknown-revision-child", `<text>body</text><custom>hidden</custom>`},
 	}
 	for _, tc := range cases {
