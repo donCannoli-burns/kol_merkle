@@ -206,3 +206,46 @@ func TestUnavailableContentFailsClosedAndRollsBack(t *testing.T) {
 		})
 	}
 }
+
+// A malformed second-page timestamp must reject the entire import. Even if
+// the first page has already been staged, no page or snapshot may be published.
+func TestBlankRevisionTimestampFailsClosedAndRollsBack(t *testing.T) {
+	cases := []struct {
+		name, timestamp string
+	}{
+		{"empty", `<timestamp/>`},
+		{"space", `<timestamp> </timestamp>`},
+		{"entity-whitespace", `<timestamp>&#32;&#10;</timestamp>`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s, _, initialRoot := fixtureArchive(t)
+			initialObjects, initialSnapshots, err := s.Verify(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			src := `<mediawiki><page><title>First staged page</title><ns>0</ns><id>900</id><revision><id>900</id><timestamp>2020-01-01T00:00:00Z</timestamp><text>valid first page</text></revision></page><page><title>Invalid second page</title><ns>0</ns><id>901</id><revision><id>901</id>` + tc.timestamp + `<text>must not persist</text></revision></page></mediawiki>`
+			if _, _, err := Compile(ctx, s, testOrigin, strings.NewReader(src)); err == nil {
+				t.Fatal("blank timestamp import was accepted")
+			} else if !strings.Contains(err.Error(), "revision timestamp is blank") {
+				t.Fatalf("unexpected rejection reason: %v", err)
+			}
+			objects, snapshots, err := s.Verify(ctx)
+			if err != nil || objects != initialObjects || snapshots != initialSnapshots {
+				t.Fatalf("verification changed after rejected import: objects=%d snapshots=%d err=%v", objects, snapshots, err)
+			}
+			var imported int
+			if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM pages WHERE source_page_id IN (900,901)`).Scan(&imported); err != nil {
+				t.Fatal(err)
+			}
+			if imported != 0 {
+				t.Fatalf("import left %d staged pages behind", imported)
+			}
+			var root string
+			if err := s.DB.QueryRowContext(ctx, `SELECT root FROM snapshots`).Scan(&root); err != nil || root != initialRoot {
+				t.Fatalf("snapshot root changed after failed import: got=%q want=%q err=%v", root, initialRoot, err)
+			}
+		})
+	}
+}
