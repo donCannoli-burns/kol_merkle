@@ -65,6 +65,12 @@ expanded XML text-attribute names (including `bytes`, `id`, `sha1` and
 must equal the UTF-8 byte length of the XML-decoded text (not the number of
 characters or bytes in escaped XML markup). Exports that require those features must be handled
 by a future versioned representation; M0 does not fill them with empty text.
+Revision `<timestamp>` fields are rejected when empty or whitespace-only,
+including whitespace produced by entity/CDATA decoding. Nonblank timestamps
+remain byte-for-byte unchanged; this check **does not** certify date/time
+syntax or canonical UTC ordering. MediaWiki schema-level timestamp validation
+remains a separate policy decision, and verify checks consistency with admitted
+input rather than proving that arbitrary strings represent real dates.
 The scope is an intentional fail-closed subset of MediaWiki XML, not full export
 coverage or a new security guarantee for untrusted XML. The document root and
 page-level extension admission remain outside this repair scope (R01-A04).

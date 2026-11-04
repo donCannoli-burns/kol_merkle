@@ -171,6 +171,12 @@ func (r *Revision) UnmarshalXML(dec *xml.Decoder, start xml.StartElement) error 
 				if err != nil {
 					return fmt.Errorf("revision timestamp: %w", err)
 				}
+				// A present but blank timestamp is not a meaningful revision
+				// timestamp. Preserve the original bytes for nonblank values;
+				// full date/time syntax validation remains outside M0-R01.
+				if strings.TrimSpace(value) == "" {
+					return fmt.Errorf("revision timestamp is blank")
+				}
 				parsed.Timestamp = value
 			case "model", "format":
 				value, err := decodeRevisionScalar(dec, el)
